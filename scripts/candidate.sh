@@ -100,7 +100,14 @@ cmd_pr() {
   # missing (typo in candidate.default_branch, renamed branch, no fetch yet)
   # the diff would fail and the gate would see nothing — fail closed instead.
   git_c rev-parse --verify --quiet "origin/$base" >/dev/null || mm_die "origin/$base not found — check candidate.default_branch or run candidate.sh init"
-  cmd_check >/dev/null || mm_die "check failed — fix the candidate before opening a PR"
+  # The template's --harness is the slow part of check (~1-2 min). The self-check
+  # runs a dozen dry-run scenarios, so it may skip the re-run with
+  # MM_PR_SKIP_CHECK=1 — honoured ONLY in --dry-run; the live path always checks.
+  if [ "$dry" = yes ] && [ "${MM_PR_SKIP_CHECK:-}" = 1 ]; then
+    printf 'pr: check skipped (MM_PR_SKIP_CHECK=1, dry-run only)\n'
+  else
+    cmd_check >/dev/null || mm_die "check failed — fix the candidate before opening a PR"
+  fi
   title=$(mm_frontmatter_field "$note" title)
   body=$(awk '/^## Proposal/ { p = 1; next } /^## / { p = 0 } p' "$note")
   # PR body: the note without frontmatter and without its Evidence section (store ids stay private)

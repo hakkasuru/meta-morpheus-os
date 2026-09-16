@@ -346,12 +346,16 @@ run_self_check() {
     sc_grep_str "$(git -C "$SC/candidate" log -1 --format=%s)" "^proposal: Implementer brief lacks" "commit subject from the note title"
     sc_eq "$(git -C "$bare" branch --list 'proposal/*' | grep -c .)" 0 "pr --dry-run pushes nothing"
     sc_eq "$(mm_frontmatter_field "$SC/repo/proposals/2026-01-01-good.md" status)" proposed "dry-run leaves the note status"
+    # One real pr→check path is covered above; the remaining dry-run scenarios skip
+    # the template's --harness re-run (dry-run only knob, see cmd_pr).
+    export MM_PR_SKIP_CHECK=1
     # pr --dry-run again on the SAME branch: nothing new to stage, but the
     # branch is already ahead of origin/$base from the commit above — must
     # not die with "nothing to commit", just skip straight to gate/push/PR.
     out=$(cd "$SC/repo" && MM_SOURCES="$SC/sources3.yaml" "$C" pr proposals/2026-01-01-good.md --dry-run 2>&1); rc=$?
     sc_eq "$rc" 0 "pr --dry-run again on the same branch succeeds (ahead of origin, nothing new to stage)"
     sc_grep_str "$out" "would run: gh pr create --base main --head proposal/conventions-pointer" "pr --dry-run (repeat) prints the gh command"
+    sc_grep_str "$out" "pr: check skipped" "pr --dry-run honours MM_PR_SKIP_CHECK"
     # leakage: a store id in the diff is refused
     (cd "$SC/repo" && MM_SOURCES="$SC/sources3.yaml" "$C" branch leaky >/dev/null)
     printf '\nsee T-20260102-a2\n' >>"$SC/candidate/README.md" 2>/dev/null || printf 'see T-20260102-a2\n' >"$SC/candidate/LEAK.md"
@@ -452,6 +456,7 @@ run_self_check() {
     sc_grep_str "$out" -- "--yes" "pr's refusal names the --yes flag"
     sc_eq "$(git -C "$SC/candidate" rev-parse HEAD)" "$head_before" "pr without --yes makes no commit"
     sc_eq "$(git -C "$bare" branch --list 'proposal/*' | grep -c .)" 0 "pr without --yes pushes nothing"
+    unset MM_PR_SKIP_CHECK
   fi
 
   # --- Task 6: proposer texts, commands, hook, README, CI (presence +
