@@ -1,0 +1,57 @@
+name: validate
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: validate.sh (workspace + --self-check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # candidate/ is gitignored, so cloning it here never dirties the
+      # workspace-mode checks below. This is the public template itself
+      # (a public URL in a public repo's CI is fine); a private instance
+      # points config/sources.yaml's candidate.remote at its own fork
+      # instead, but CI here only needs a valid template checkout to drive
+      # --self-check's candidate.sh assertions.
+      - name: clone the template as the candidate
+        run: git clone --depth 1 https://github.com/hakkasuru/morpheus-os candidate
+      - name: validate.sh (workspace mode)
+        run: scripts/validate.sh
+      # The self-check's sync smoke test drives the template's own
+      # scripts/event.sh, which uses perl — present on ubuntu-latest
+      # runners without any extra install step.
+      - name: validate.sh --self-check
+        run: MM_TEMPLATE_PATH="$PWD/candidate" scripts/validate.sh --self-check
+      # The pinned container is the shellcheck gate contributors also run
+      # locally, independent of whatever shellcheck version ubuntu-latest
+      # ships.
+      - name: shellcheck (pinned container)
+        run: docker run --rm -e LANG=C.UTF-8 -v "$PWD":/w -w /w koalaman/shellcheck:stable scripts/*.sh
+
+  bash-3-2:
+    name: bash 3.2 (syntax + self-check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash -n under bash:3.2
+        run: |
+          docker run --rm -v "$PWD":/w -w /w bash:3.2 bash -c '
+            rc=0
+            for f in scripts/*.sh; do
+              bash -n "$f" || { echo "bash 3.2 syntax error: $f"; rc=1; }
+            done
+            exit $rc'
+      # The suite a macOS contributor runs, on bash 3.2 semantics at RUNTIME
+      # (not just at parse time) and against busybox awk/grep/sed/find. The
+      # image ships no git and no python3, so the sync and candidate.sh blocks
+      # skip themselves (no MM_TEMPLATE_PATH) and the settings.json parse
+      # prints its explicit skip line; every fixture-store assertion — which
+      # needs neither — runs.
+      - name: validate.sh --self-check under bash:3.2
+        run: docker run --rm -v "$PWD":/w -w /w bash:3.2 bash scripts/validate.sh --self-check
