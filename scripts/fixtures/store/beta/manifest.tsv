@@ -1,0 +1,2 @@
+id	type	status	harness	parent	source_path	exported_at	sessions_copied	sessions_missing	store_version
+T-20260103-b1	task	done	1.0.0+aaaaaaa	-	work/done/T-20260103-b1	2026-01-01T00:00:00Z	0	0	1

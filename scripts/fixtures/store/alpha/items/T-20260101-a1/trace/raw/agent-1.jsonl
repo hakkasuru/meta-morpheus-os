@@ -1,0 +1,1 @@
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/x/work/active/T-20260101-a1/task.md"}}]},"usage":{"input_tokens":10,"output_tokens":2}}

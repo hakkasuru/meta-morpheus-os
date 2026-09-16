@@ -1,0 +1,11 @@
+# Copy to config/sources.yaml and fill in. Your PRIVATE instance commits that
+# file (it is the registry of your workspaces); never commit it to the public
+# repo. Only this example file ships publicly.
+sources:
+  - name: my-workspace          # store subfolder name ([A-Za-z0-9._-]+)
+    path: /absolute/path/to/my-morpheus-os
+candidate:
+  remote: git@github.com:you/morpheus-os.git   # the template (or your enterprise mirror) the proposer changes
+  default_branch: main
+  # host: github                # github | gitlab — auto-detected from the URL; set for self-hosted domains
+  branch_prefix: proposal/

@@ -1,0 +1,1 @@
+Proposal notes live here in each private instance — one Markdown file per candidate improvement, frontmatter and sections as defined in AGENTS.md § Proposal note. The public repo ships none of these; they are local, per-operator records of what was proposed against the template, what evidence backed it, and what was measured after landing.

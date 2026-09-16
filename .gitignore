@@ -1,0 +1,6 @@
+candidate/
+experience/*/items/
+experience/*/sessions/
+experience/*/config/
+.superpowers/
+.DS_Store
