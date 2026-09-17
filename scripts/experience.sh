@@ -16,9 +16,14 @@ Usage: experience.sh [--store <dir>] [--sources <file>] <subcommand> [args]
   status [--hook claude|copilot] sources + last sync, harness versions, proposals by status
   versions                      harness versions present: items, workspaces, date range
   list [--workspace <ws>] [--harness <stamp|semver>] [--gaps] [--since <YYYY-MM-DD>]
+                                docs_missing shows gate-doc gaps only; `source`
+                                says events (recorded) or legacy (reconstructed)
   show <id>                     one item: scorecard row, events.log, trace files
   grep <ERE> [--in docs|events|briefs|reports|raw|sessions|all] [--workspace <ws>] [<id> ...]
-  summary [--workspace <ws>]    latest summary snapshot per workspace
+  summary [--workspace <ws>]    latest summary snapshot per workspace; changes_requested,
+                                blocked, corrections and reverted are EVENT counts, each
+                                followed by items_cr/items_blocked/items_corr/items_rev,
+                                the number of items contributing to it
   diff <harness-A> <harness-B>  summary metrics for two versions and their deltas
 
 Store: --store, else $MM_STORE, else <repo>/experience. Sources: --sources,
@@ -75,7 +80,27 @@ EOF
 }
 # Column indices below are the template HEADER shifted by one (col 1 = workspace):
 # 4 harness, 7 status, 8 created, 10 lead_h, 11 g1_rounds, 14 g1_by, 17 g2_rounds,
-# 20 g2_by, 23 changes_requested, 24 blocked, 25 corrections, 34 reverted, 35 docs_missing.
+# 20 g2_by, 23 changes_requested, 24 blocked, 25 corrections, 34 reverted,
+# 35 docs_missing, 42 source.
+
+# The awk helpers below are shared, verbatim, by every query that reads a
+# scorecard row:
+#   gate_gaps(v)  docs_missing with the `events` and `harness` tokens dropped.
+#                 Those two say the item predates the run record (source
+#                 legacy), not that a gate was skipped; items_with_gaps has
+#                 always ignored them, so the displayed column now agrees
+#                 with the count. The store's raw column is untouched.
+#   nonzero(v)    a scorecard cell that carries a real, non-zero value —
+#                 "-", "", "0" and "no" are all "nothing happened".
+AWK_ROW_HELPERS='
+function gate_gaps(v,   n, i, a, out) {
+  if (v == "" || v == "-") return "-"
+  n = split(v, a, /[, ]+/); out = ""
+  for (i = 1; i <= n; i++) if (a[i] != "events" && a[i] != "harness" && a[i] != "") out = (out == "" ? a[i] : out "," a[i])
+  return (out == "" ? "-" : out)
+}
+function nonzero(v) { return (v != "" && v != "-" && v != "0" && v != "no") }
+'
 
 cmd_versions() {
   printf 'harness\titems\tworkspaces\tfirst_created\tlast_created\n'
@@ -94,13 +119,13 @@ cmd_list() {
     --gaps) gaps=yes ;;
     --since) [ $# -ge 2 ] || mm_usage_error "list: --since requires a YYYY-MM-DD date"; since="$2"; shift ;;
     *) mm_usage_error "list: unknown argument $1" ;; esac; shift; done
-  printf 'workspace\tid\tharness\tstatus\tg1_rounds\tg2_rounds\tchanges_requested\tblocked\tcorrections\treverted\tdocs_missing\tlead_h\n'
-  latest_rows | awk -F'\t' -v OFS='\t' -v ws="$ws" -v h="$harness" -v gaps="$gaps" -v since="$since" '
+  printf 'workspace\tid\tharness\tstatus\tg1_rounds\tg2_rounds\tchanges_requested\tblocked\tcorrections\treverted\tdocs_missing\tsource\tlead_h\n'
+  latest_rows | awk -F'\t' -v OFS='\t' -v ws="$ws" -v h="$harness" -v gaps="$gaps" -v since="$since" "$AWK_ROW_HELPERS"'
 ws != "" && $1 != ws { next }
 h != "" && $4 != h && index($4, h "+") != 1 { next }
 gaps == "yes" && $35 !~ /(plan-review|impl-review|verification|diff-review)/ { next }
 since != "" && $8 < since { next }
-{ print $1, $2, $4, $7, $11, $17, $23, $24, $25, $34, $35, $10 }' | LC_ALL=C sort
+{ print $1, $2, $4, $7, $11, $17, $23, $24, $25, $34, gate_gaps($35), ($42 == "" ? "-" : $42), $10 }' | LC_ALL=C sort
 }
 
 cmd_show() {
@@ -108,7 +133,11 @@ cmd_show() {
   local id="$1" ws f
   ws=$(ws_of "$id"); f=$(mm_latest "$store/$ws" scorecard)
   printf 'workspace: %s\n' "$ws"
-  [ -n "$f" ] && awk -F'\t' -v id="$id" 'NR == 1 { for (i = 1; i <= NF; i++) h[i] = $i; next } $1 == id { for (i = 1; i <= NF; i++) print h[i] ": " $i }' "$f"
+  # docs_missing is shown as gate-doc gaps only; `source` right above it says
+  # whether the row was recorded or reconstructed, which is what the dropped
+  # `events`/`harness` tokens actually meant.
+  [ -n "$f" ] && awk -F'\t' -v id="$id" "$AWK_ROW_HELPERS"'NR == 1 { for (i = 1; i <= NF; i++) h[i] = $i; next }
+$1 == id { for (i = 1; i <= NF; i++) print h[i] ": " (h[i] == "docs_missing" ? gate_gaps($i) : $i) }' "$f"
   if [ -f "$store/$ws/items/$id/events.log" ]; then printf -- '--- events.log\n'; cut -f2- "$store/$ws/items/$id/events.log"; fi
   printf -- '--- trace files\n'
   [ -d "$store/$ws/items/$id/trace" ] && find "$store/$ws/items/$id/trace" -type f | LC_ALL=C sort | while IFS= read -r p; do printf '%s\t%s\n' "$(wc -c <"$p" | tr -d ' ')" "${p#"$store/$ws/items/$id/"}"; done
@@ -150,18 +179,40 @@ EOF
   return 0
 }
 
+# item_counts — "ws<TAB>harness<TAB>items_cr<TAB>items_blocked<TAB>items_corr<TAB>items_rev",
+# one line per workspace/harness: how many ITEMS carry a non-zero value in
+# each column the summary snapshot reports as a sum of EVENTS over items.
+# Counted over the same manifest-joined rows every other query uses.
+item_counts() {
+  latest_rows | awk -F'\t' -v OFS='\t' "$AWK_ROW_HELPERS"'
+{ k = $1 SUBSEP $4; ws[k] = $1; hv[k] = $4
+  if (nonzero($23)) cr[k]++; if (nonzero($24)) bl[k]++; if (nonzero($25)) co[k]++; if (nonzero($34)) rv[k]++ }
+END { for (k in ws) print ws[k], hv[k], cr[k] + 0, bl[k] + 0, co[k] + 0, rv[k] + 0 }'
+}
+
 cmd_summary() {
-  local ws="" ws2 f
+  local ws="" ws2 f counts
   while [ $# -gt 0 ]; do case "$1" in
     --workspace) [ $# -ge 2 ] || mm_usage_error "summary: --workspace requires a value"; ws="$2"; shift ;;
     *) mm_usage_error "summary: unknown argument $1" ;;
   esac; shift; done
-  printf 'workspace\tharness\titems\tauto_approve_rate\tmean_g1_rounds\tmean_g2_rounds\tchanges_requested\tblocked\tcorrections\treverted\titems_with_gaps\tmean_lead_h\n'
+  # changes_requested/blocked/corrections/reverted are EVENT counts summed over
+  # items; each is followed by its item count (how many items contributed), so
+  # a signal concentrated in one item cannot read as a broad one.
+  printf 'workspace\tharness\titems\tauto_approve_rate\tmean_g1_rounds\tmean_g2_rounds\tchanges_requested\titems_cr\tblocked\titems_blocked\tcorrections\titems_corr\treverted\titems_rev\titems_with_gaps\tmean_lead_h\n'
+  counts=$(item_counts)
   while IFS= read -r ws2; do
     [ -n "$ws2" ] || continue
     [ -z "$ws" ] || [ "$ws2" = "$ws" ] || continue
     f=$(mm_latest "$store/$ws2" summary); [ -n "$f" ] || continue
-    awk -F'\t' -v OFS='\t' -v ws="$ws2" 'NR > 1 { print ws, $0 }' "$f"
+    # counts travels through the environment, not -v: awk's -v runs escape
+    # processing on the value and BWK awk rejects the embedded newlines.
+    counts="$counts" awk -F'\t' -v OFS='\t' -v ws="$ws2" '
+BEGIN { icr[""] = 0; ibl[""] = 0; ico[""] = 0; irv[""] = 0   # make them arrays even when counts is empty
+  n = split(ENVIRON["counts"], L, "\n")
+  for (i = 1; i <= n; i++) { split(L[i], c, "\t"); if (c[1] == ws) { icr[c[2]] = c[3]; ibl[c[2]] = c[4]; ico[c[2]] = c[5]; irv[c[2]] = c[6] } } }
+function got(a, h) { return (h in a) ? a[h] : 0 }
+NR > 1 { print ws, $1, $2, $3, $4, $5, $6, got(icr, $1), $7, got(ibl, $1), $8, got(ico, $1), $9, got(irv, $1), $10, $11 }' "$f"
   done <<EOF
 $(workspaces)
 EOF
@@ -170,19 +221,23 @@ EOF
 # summary_metrics <ere-on-harness> — "metric<TAB>value" lines over latest rows matching the harness
 # (per workspace prefixed "ws<TAB>", plus "all<TAB>").
 summary_metrics() {
-  latest_rows | awk -F'\t' -v OFS='\t' -v want="$1" '
+  latest_rows | awk -F'\t' -v OFS='\t' -v want="$1" "$AWK_ROW_HELPERS"'
 function num(v) { return (v ~ /^-?[0-9.]+$/) ? v + 0 : 0 } function isnum(v) { return v ~ /^-?[0-9.]+$/ }
 $4 != want && index($4, want "+") != 1 { next }
 { for (k = 1; k <= 2; k++) { s = (k == 1 ? $1 : "all")
     n[s]++; if ($14 != "-") { appr[s]++; if ($14 == "auto") auto[s]++ } if ($20 != "-") { appr[s]++; if ($20 == "auto") auto[s]++ }
     if (isnum($11)) { g1[s] += $11; g1n[s]++ } if (isnum($17)) { g2[s] += $17; g2n[s]++ }
     cr[s] += num($23); bl[s] += num($24); co[s] += num($25); if ($34 == "yes") rv[s]++
+    if (nonzero($23)) icr[s]++; if (nonzero($24)) ibl[s]++; if (nonzero($25)) ico[s]++; if (nonzero($34)) irv[s]++
     if ($35 ~ /(plan-review|impl-review|verification|diff-review)/) gaps[s]++
     if (isnum($10)) { lead[s] += $10; leadn[s]++ } } }
 END { for (s in n) {
   print s, "items", n[s]; print s, "auto_approve_rate", (appr[s] ? sprintf("%.2f", auto[s] / appr[s]) : "-")
   print s, "mean_g1_rounds", (g1n[s] ? sprintf("%.1f", g1[s] / g1n[s]) : "-"); print s, "mean_g2_rounds", (g2n[s] ? sprintf("%.1f", g2[s] / g2n[s]) : "-")
-  print s, "changes_requested", cr[s] + 0; print s, "blocked", bl[s] + 0; print s, "corrections", co[s] + 0; print s, "reverted", rv[s] + 0
+  print s, "changes_requested", cr[s] + 0; print s, "items_cr", icr[s] + 0
+  print s, "blocked", bl[s] + 0; print s, "items_blocked", ibl[s] + 0
+  print s, "corrections", co[s] + 0; print s, "items_corr", ico[s] + 0
+  print s, "reverted", rv[s] + 0; print s, "items_rev", irv[s] + 0
   print s, "items_with_gaps", gaps[s] + 0; print s, "mean_lead_h", (leadn[s] ? sprintf("%.1f", lead[s] / leadn[s]) : "-") } }'
 }
 
@@ -193,7 +248,7 @@ cmd_diff() {
   { summary_metrics "$a" | sed $'s/^/A\t/'; summary_metrics "$b" | sed $'s/^/B\t/'; } | awk -F'\t' -v OFS='\t' '
 { key = $2 SUBSEP $3; scopes[$2] = 1; metrics[$3] = 1; v[$1 SUBSEP key] = $4 }
 END {
-  order = "items auto_approve_rate mean_g1_rounds mean_g2_rounds changes_requested blocked corrections reverted items_with_gaps mean_lead_h"
+  order = "items auto_approve_rate mean_g1_rounds mean_g2_rounds changes_requested items_cr blocked items_blocked corrections items_corr reverted items_rev items_with_gaps mean_lead_h"
   nm = split(order, m, " ")
   for (s in scopes) for (i = 1; i <= nm; i++) { key = s SUBSEP m[i]; av = ("A" SUBSEP key in v) ? v["A" SUBSEP key] : "-"; bv = ("B" SUBSEP key in v) ? v["B" SUBSEP key] : "-"
     if (av ~ /^-?[0-9.]+$/ && bv ~ /^-?[0-9.]+$/) { d = bv - av; d = (d > 0 ? "+" : "") (index(av bv, ".") ? sprintf("%.1f", d) : sprintf("%d", d)) } else d = "-"

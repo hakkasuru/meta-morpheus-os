@@ -170,15 +170,15 @@ run_self_check() {
   out=$("$X" versions)
   sc_eq "$(printf '%s\n' "$out" | head -1)" "harness	items	workspaces	first_created	last_created" "versions header"
   sc_grep_str "$out" "^1\.0\.0\+aaaaaaa	2	alpha,beta	2026-01-01	2026-01-03$" "versions row 1.0.0"
-  sc_grep_str "$out" "^1\.1\.0\+bbbbbbb	1	alpha	2026-01-02	2026-01-02$" "versions row 1.1.0"
+  sc_grep_str "$out" "^1\.1\.0\+bbbbbbb	2	alpha	2026-01-02	2026-01-02$" "versions row 1.1.0"
   out=$("$X" list)
-  sc_eq "$(printf '%s\n' "$out" | head -1)" "workspace	id	harness	status	g1_rounds	g2_rounds	changes_requested	blocked	corrections	reverted	docs_missing	lead_h" "list header"
-  sc_eq "$(printf '%s\n' "$out" | grep -c .)" 4 "list: header + 3 items"
-  sc_grep_str "$out" "^alpha	T-20260102-a2	1\.1\.0\+bbbbbbb	done	2	1	1	1	1	-	diff-review	6\.0$" "list row a2"
+  sc_eq "$(printf '%s\n' "$out" | head -1)" "workspace	id	harness	status	g1_rounds	g2_rounds	changes_requested	blocked	corrections	reverted	docs_missing	source	lead_h" "list header"
+  sc_eq "$(printf '%s\n' "$out" | grep -c .)" 5 "list: header + 4 items"
+  sc_grep_str "$out" "^alpha	T-20260102-a2	1\.1\.0\+bbbbbbb	done	2	1	1	1	1	-	diff-review	events	6\.0$" "list row a2"
   sc_eq "$("$X" list --workspace beta | grep -c .)" 2 "list --workspace"
   sc_eq "$("$X" list --harness 1.0.0 | grep -c .)" 3 "list --harness semver matches both stamps"
-  sc_eq "$("$X" list --gaps | grep -c .)" 2 "list --gaps: only a2"
-  sc_eq "$("$X" list --since 2026-01-02 | grep -c .)" 3 "list --since"
+  sc_eq "$("$X" list --gaps | grep -c .)" 3 "list --gaps: a2 and a3"
+  sc_eq "$("$X" list --since 2026-01-02 | grep -c .)" 4 "list --since"
   out=$("$X" show T-20260101-a1)
   sc_grep_str "$out" "^harness: 1\.0\.0\+aaaaaaa$" "show prints key: value"
   sc_grep_str "$out" "^merged	mr=https://example.invalid/mr/1$" "show prints events.log lines"
@@ -204,18 +204,19 @@ run_self_check() {
   sc_grep_str "$out" "^alpha/T-20260101-a1:trace/briefs/01-explorer-1\.md:1:" "grep briefs prefix survives a store path with spaces"
   out=$("$X" summary --workspace nope)
   sc_eq "$(printf '%s\n' "$out" | grep -c .)" 1 "summary --workspace <nonexistent>: header only, no data rows"
-  sc_eq "$(printf '%s\n' "$out" | head -1)" "workspace	harness	items	auto_approve_rate	mean_g1_rounds	mean_g2_rounds	changes_requested	blocked	corrections	reverted	items_with_gaps	mean_lead_h" "summary header text"
+  sc_eq "$(printf '%s\n' "$out" | head -1)" "workspace	harness	items	auto_approve_rate	mean_g1_rounds	mean_g2_rounds	changes_requested	items_cr	blocked	items_blocked	corrections	items_corr	reverted	items_rev	items_with_gaps	mean_lead_h" "summary header text"
   out=$("$X" summary --bogus 2>&1; echo "rc=$?")
   sc_grep_str "$out" '^rc=2$' "summary --bogus is a usage error (exit 2)"
 
   # --- experience.sh diff/status/sync (Task 3) ---
   out=$("$X" diff 1.0.0 1.1.0)
   sc_eq "$(printf '%s\n' "$out" | head -1)" "scope	metric	1.0.0	1.1.0	delta" "diff header"
-  sc_grep_str "$out" "^all	items	2	1	-1$" "diff items"
-  sc_grep_str "$out" "^all	changes_requested	0	1	\+1$" "diff changes_requested"
-  sc_grep_str "$out" "^all	mean_lead_h	18\.0	6\.0	-12\.0$" "diff mean_lead_h"
-  sc_grep_str "$out" "^alpha	items	1	1	0$" "diff per workspace"
-  sc_grep_str "$out" "^all	items_with_gaps	0	1	\+1$" "diff items_with_gaps"
+  sc_grep_str "$out" "^all	items	2	2	0$" "diff items"
+  sc_grep_str "$out" "^all	changes_requested	0	3	\+3$" "diff changes_requested (events)"
+  sc_grep_str "$out" "^all	items_cr	0	2	\+2$" "diff items_cr (items), distinct from the event count"
+  sc_grep_str "$out" "^all	mean_lead_h	18\.0	9\.0	-9\.0$" "diff mean_lead_h"
+  sc_grep_str "$out" "^alpha	items	1	2	\+1$" "diff per workspace"
+  sc_grep_str "$out" "^all	items_with_gaps	0	2	\+2$" "diff items_with_gaps"
   # status (fixture sources file pointing at a fake workspace path → never synced)
   printf 'sources:\n  - name: alpha\n    path: %s/fake-alpha\ncandidate:\n  remote: git@github.com:you/morpheus-os.git\n' "$SC" >"$SC/sources.yaml"
   out=$("$X" --sources "$SC/sources.yaml" status)
@@ -591,6 +592,37 @@ run_self_check() {
   sc_grep "$root/.gitignore" '^experience/\*/config/$'
   sc_grep "$root/README.md" '^What is tracked: .manifest\.tsv'
   sc_grep "$root/README.md" 'run record, and .config/'
+
+  # friction 4: changes_requested/blocked/corrections/reverted sum EVENTS over
+  # items; each now has a sibling ITEM count. The fixture's 1.1.0 cohort has 3
+  # changes-requested events spread over 2 items, so an implementation that
+  # merely echoed the event count could not pass.
+  out=$("$X" summary --workspace alpha)
+  sum_row=$(printf '%s\n' "$out" | awk -F'\t' '$2 == "1.1.0+bbbbbbb"')
+  sc_eq "$(printf '%s\n' "$sum_row" | cut -f7)" 3 "summary changes_requested is the EVENT count"
+  expected_items_cr=$(awk -F'\t' 'NR > 1 && $3 == "1.1.0+bbbbbbb" && $22 != "-" && $22 != "0" && $22 != "" { n++ } END { print n + 0 }' \
+    "$SC/store/alpha/scorecard-20260101T000000Z.tsv")
+  sc_eq "$expected_items_cr" 2 "fixture: the 1.1.0 changes-requested events sit in 2 items"
+  sc_eq "$(printf '%s\n' "$sum_row" | cut -f8)" "$expected_items_cr" "summary items_cr = items with a non-zero changes_requested"
+  sc_eq "$(printf '%s\n' "$sum_row" | cut -f10)" 1 "summary items_blocked follows blocked"
+  sc_eq "$(printf '%s\n' "$sum_row" | cut -f12)" 1 "summary items_corr follows corrections"
+  sc_eq "$(printf '%s\n' "$sum_row" | cut -f14)" 0 "summary items_rev follows reverted"
+
+  # friction 5: docs_missing names `events`/`harness` for every item that
+  # predates the run record. Those are not gate gaps (items_with_gaps has
+  # always ignored them), so list/show display gate docs only and say
+  # `source` instead. The store's raw column keeps every token.
+  out=$("$X" list --gaps)
+  gaps_row=$(printf '%s\n' "$out" | awk -F'\t' '$2 == "T-20260102-a3"')
+  sc_grep_str "$gaps_row" "	diff-review	legacy	" "list --gaps shows the legacy item's gate-doc gap beside source=legacy"
+  gaps_has_events=no
+  case "$(printf '%s\n' "$gaps_row" | cut -f11)" in *events*) gaps_has_events=yes ;; esac
+  sc_eq "$gaps_has_events" no "list --gaps drops the 'events' token from a legacy item's docs_missing"
+  sc_grep_str "$(awk -F'\t' '$1 == "T-20260102-a3" { print $34 }' "$SC/store/alpha/scorecard-20260101T000000Z.tsv")" \
+    "events" "the store's raw docs_missing column still carries 'events'"
+  out=$("$X" show T-20260102-a3)
+  sc_grep_str "$out" "^source: legacy$" "show reports source: legacy for a reconstructed item"
+  sc_grep_str "$out" "^docs_missing: diff-review$" "show displays gate-doc gaps only"
 
   # friction 1: the shell gate never passes silently. MM_NO_DOCKER=1 forces
   # the Docker-down path; MM_SHELLCHECK points the on-PATH lookup at a name
