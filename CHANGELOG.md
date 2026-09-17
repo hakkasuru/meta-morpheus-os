@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.1 — 2026-09-17
+
+- `candidate.sh init` prints the identity proposal commits will carry and applies optional `candidate.git_name` / `candidate.git_email` from `config/sources.yaml` to the clone — a wrong inherited identity is visible before the first `pr`.
+- CI clones the template into `template/` (a self-check fixture), no longer into `candidate/`, so the log stops reading as if a proposer candidate were involved.
+
 ## 1.1.0 — 2026-09-17
 
 - `candidate.sh check`: the shell gate no longer passes silently — with Docker down and no shellcheck it says so, and FAILS when the change touches `scripts/`.

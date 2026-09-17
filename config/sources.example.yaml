@@ -9,3 +9,5 @@ candidate:
   default_branch: main
   # host: github                # github | gitlab — auto-detected from the URL; set for self-hosted domains
   branch_prefix: proposal/
+  # git_name: Your Name         # identity for proposal commits (applied to candidate/ by `init`);
+  # git_email: you@example.invalid   # unset → the clone keeps the identity it inherits

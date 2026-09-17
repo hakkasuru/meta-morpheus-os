@@ -54,6 +54,7 @@ function clean(v,   q) { sub(/[[:space:]]+#.*$/, "", v); gsub(/^[[:space:]]+|[[:
       default_branch) v=main ;;
       branch_prefix) v=proposal/ ;;
       host) v="" ;;
+      git_name | git_email) v="" ;;   # optional: identity for proposal commits
       remote) mm_die "candidate.remote is not set in $f" ;;
     esac
   fi

@@ -61,6 +61,11 @@ own workspaces.
    scripts/candidate.sh init
    ```
 
+   `init` prints the identity proposal commits will carry (`candidate:
+   commits as …`). If it is not the one you want on the public template,
+   set `candidate.git_name` / `candidate.git_email` in `config/sources.yaml`
+   and run `init` again.
+
 4. Pull in your first experience export:
 
    ```sh

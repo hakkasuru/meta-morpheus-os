@@ -13,21 +13,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # candidate/ is gitignored, so cloning it here never dirties the
-      # workspace-mode checks below. This is the public template itself
-      # (a public URL in a public repo's CI is fine); a private instance
-      # points config/sources.yaml's candidate.remote at its own fork
-      # instead, but CI here only needs a valid template checkout to drive
-      # --self-check's candidate.sh assertions.
-      - name: clone the template as the candidate
-        run: git clone --depth 1 https://github.com/hakkasuru/morpheus-os candidate
+      # A test fixture, not a proposer candidate: the self-check clones FROM
+      # this checkout into throwaway dirs to exercise the sync and
+      # candidate.sh flows. It is the public template itself (a public URL in
+      # a public repo's CI is fine). template/ is gitignored, so it never
+      # dirties the workspace-mode checks below.
+      - name: clone the template (self-check fixture)
+        run: git clone --depth 1 https://github.com/hakkasuru/morpheus-os template
       - name: validate.sh (workspace mode)
         run: scripts/validate.sh
       # The self-check's sync smoke test drives the template's own
       # scripts/event.sh, which uses perl — present on ubuntu-latest
       # runners without any extra install step.
       - name: validate.sh --self-check
-        run: MM_TEMPLATE_PATH="$PWD/candidate" scripts/validate.sh --self-check
+        run: MM_TEMPLATE_PATH="$PWD/template" scripts/validate.sh --self-check
       # The pinned container is the shellcheck gate contributors also run
       # locally, independent of whatever shellcheck version ubuntu-latest
       # ships.

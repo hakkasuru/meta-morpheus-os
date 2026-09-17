@@ -56,6 +56,23 @@ require_template() {
   [ -f "$cand/VERSION" ] && [ -f "$cand/scripts/validate.sh" ] || mm_die "candidate: $cand is not a morpheus-os template checkout (missing VERSION or scripts/validate.sh)"
 }
 
+# set_identity — the author of proposal commits. candidate.git_name /
+# candidate.git_email from sources.yaml are applied to the clone when set;
+# otherwise the clone keeps whatever git config it inherited. Printed either
+# way, so a wrong inherited identity is visible before the first `pr`.
+set_identity() {
+  local n e
+  n=$(mm_candidate git_name); e=$(mm_candidate git_email)
+  if [ -n "$n" ]; then git_c config user.name "$n"; fi
+  if [ -n "$e" ]; then git_c config user.email "$e"; fi
+  n=$(git_c config user.name 2>/dev/null || true); e=$(git_c config user.email 2>/dev/null || true)
+  if [ -z "$n" ] || [ -z "$e" ]; then
+    printf 'warning: candidate: no git identity configured — set candidate.git_name/git_email in %s, or pr falls back to Meta Harness <meta@example.invalid>\n' "$(mm_sources_file)" >&2
+  else
+    printf 'candidate: commits as %s <%s>\n' "$n" "$e"
+  fi
+}
+
 cmd_init() {
   if [ -d "$cand/.git" ]; then
     require_clean
@@ -67,6 +84,7 @@ cmd_init() {
     require_template
     printf 'candidate: cloned %s into %s\n' "$remote" "$cand"
   fi
+  set_identity
 }
 cmd_branch() {
   [ $# -eq 1 ] || mm_usage_error "branch needs exactly one <slug>"

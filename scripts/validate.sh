@@ -270,9 +270,11 @@ run_self_check() {
     bare="$SC/bare.git"; src="$SC/src"
     git clone -q "$SC_TEMPLATE" "$src" && git -C "$src" checkout -q -B main
     git clone -q --bare "$src" "$bare"
-    printf 'sources: []\ncandidate:\n  remote: %s\n  default_branch: main\n  host: github\n  branch_prefix: proposal/\n' "$bare" >"$SC/sources3.yaml"
+    printf 'sources: []\ncandidate:\n  remote: %s\n  default_branch: main\n  host: github\n  branch_prefix: proposal/\n  git_name: Meta Harness\n  git_email: meta@example.invalid\n' "$bare" >"$SC/sources3.yaml"
     C="$SC/repo/scripts/candidate.sh"; export MM_CANDIDATE_DIR="$SC/candidate"
     out=$(cd "$SC/repo" && MM_SOURCES="$SC/sources3.yaml" "$C" init 2>&1)
+    sc_grep_str "$out" "commits as Meta Harness <meta@example.invalid>" "init prints the commit identity"
+    sc_eq "$(git -C "$SC/candidate" config user.email)" meta@example.invalid "init applies candidate.git_email to the clone"
     sc_file "$SC/candidate/scripts/validate.sh"
     sc_grep_str "$out" "cloned" "init clones on first run"
     head1=$(git -C "$SC/candidate" rev-parse HEAD)
