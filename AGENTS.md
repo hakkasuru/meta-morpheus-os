@@ -14,6 +14,32 @@ morpheus-os workspace; it is the harness that optimises one.
   place you edit code and docs.
 - `proposals/` — one note per proposal (shape below).
 
+### Reading the store
+
+- `source` (the scorecard's last column) is either `events` or `legacy`:
+  `events` means the row was read from the item's `events.log`, recorded as
+  the run happened; `legacy` means it was reconstructed from the item's
+  Activity prose and review docs, best effort, with first-round confidences
+  unknown. A claim that needs a decision's timing, or any trace of it, can
+  only rest on `events` rows.
+- In `summary` and `diff`, `changes_requested`, `blocked`, `corrections`
+  and `reverted` are EVENT counts summed over items. Each is followed by
+  its item count — `items_cr`, `items_blocked`, `items_corr`, `items_rev` —
+  the number of items with a non-zero value. A large event count sitting in
+  two items is a two-item signal: pick a failure class on the item counts,
+  size it on the event counts.
+- `docs_missing` may name `events` or `harness` for a legacy item: it has
+  no events log or no `harness:` stamp because it predates the run record,
+  not because a gate was skipped. `items_with_gaps` counts gate docs only
+  (plan review, impl review, verification, diff review), and so do the
+  `docs_missing` values `list` and `show` display — the store's raw column
+  keeps every token.
+- The trace layers — `events.log`, `trace/briefs/`, `trace/reports/`,
+  `trace/raw/` — exist only for items run on template >= 1.0.0. Older items
+  have documents and nothing else, so a counterfactual "what happened at
+  that moment" diagnosis is not available for them; say so in the note's
+  Diagnosis and Measurement rather than implying a trace was checked.
+
 ## Commands
 - `scripts/experience.sh status | sync | versions | list | show <id> | grep <ERE> [--in layer] | summary | diff <A> <B>`
 - `scripts/candidate.sh init | branch <slug> | check | pr <note> (--dry-run | --yes)`

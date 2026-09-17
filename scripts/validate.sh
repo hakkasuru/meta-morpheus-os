@@ -624,6 +624,12 @@ run_self_check() {
   sc_grep_str "$out" "^source: legacy$" "show reports source: legacy for a reconstructed item"
   sc_grep_str "$out" "^docs_missing: diff-review$" "show displays gate-doc gaps only"
 
+  # friction 6: the store's caveats are written down where a proposer reads.
+  sc_grep "$root/AGENTS.md" '^### Reading the store'
+  sc_grep "$root/AGENTS.md" 'source.*(legacy|events)'
+  sc_grep "$root/AGENTS.md" 'items_cr'
+  sc_grep "$root/AGENTS.md" 'items_with_gaps'
+
   # friction 1: the shell gate never passes silently. MM_NO_DOCKER=1 forces
   # the Docker-down path; MM_SHELLCHECK points the on-PATH lookup at a name
   # that does not exist (fully degraded) or at a stub standing in for a real
