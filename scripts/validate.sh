@@ -109,6 +109,10 @@ sc_workspace() {
     sed "s|__STORE__|$SC/store|g" "$f" >"$f.tmp" && mv "$f.tmp" "$f"
   done
   export MM_STORE="$SC/store"
+  # candidate.sh reads its test-only knobs (MM_NO_DOCKER, MM_SHELLCHECK,
+  # MM_PR_SKIP_CHECK) only while this is set — see candidate.sh test_knob.
+  # run_self_check unsets it again at the end.
+  export MM_SELF_CHECK=1
   SC_TEMPLATE="${MM_TEMPLATE_PATH:-$root/candidate}"
   [ -f "$SC_TEMPLATE/scripts/validate.sh" ] || SC_TEMPLATE=""
 }
@@ -342,6 +346,13 @@ run_self_check() {
     out=$(cd "$SC/repo" && MM_SOURCES="$SC/sources3.yaml" "$C" pr proposals/2026-01-01-good.md --dry-run 2>&1); rc=$?
     sc_eq "$rc" 0 "pr --dry-run succeeds (out tail: $(printf '%s' "$out" | tail -2 | tr '\n' ' '))"
     sc_grep_str "$out" "would run: gh pr create --base main --head proposal/conventions-pointer" "pr --dry-run prints the gh command"
+    # friction 2/3: the re-run of check is visible, headed, and the candidate's
+    # own warnings are marked as the candidate's rather than the proposal's.
+    sc_grep_str "$out" "check: running the candidate's own validate/harness" "pr --dry-run heads the check re-run"
+    sc_grep_str "$out" "check: OK" "pr --dry-run shows check's summary lines instead of swallowing them"
+    leak_prefixed=yes
+    if printf '%s\n' "$out" | grep -q '^warning:'; then leak_prefixed=no; fi
+    sc_eq "$leak_prefixed" yes "pr --dry-run prefixes the candidate's own warning: lines with 'candidate: '"
     sc_eq "$(git -C "$SC/candidate" log --oneline origin/main..HEAD | grep -c .)" 1 "pr --dry-run still commits locally"
     sc_grep_str "$(git -C "$SC/candidate" log -1 --format=%s)" "^proposal: Implementer brief lacks" "commit subject from the note title"
     sc_eq "$(git -C "$bare" branch --list 'proposal/*' | grep -c .)" 0 "pr --dry-run pushes nothing"
@@ -580,6 +591,45 @@ run_self_check() {
   sc_grep "$root/.gitignore" '^experience/\*/config/$'
   sc_grep "$root/README.md" '^What is tracked: .manifest\.tsv'
   sc_grep "$root/README.md" 'run record, and .config/'
+
+  # friction 1: the shell gate never passes silently. MM_NO_DOCKER=1 forces
+  # the Docker-down path; MM_SHELLCHECK points the on-PATH lookup at a name
+  # that does not exist (fully degraded) or at a stub standing in for a real
+  # linter. Both are test-only knobs — see candidate.sh cmd_check.
+  if [ -n "$SC_TEMPLATE" ]; then
+    (cd "$SC/repo" && MM_SOURCES="$SC/sources3.yaml" "$C" branch shell-gate >/dev/null)
+    printf '\n<!-- prose-only change -->\n' >>"$SC/candidate/README.md"
+    rc=0; out=$(cd "$SC/repo" && MM_SOURCES="$SC/sources3.yaml" MM_NO_DOCKER=1 MM_SHELLCHECK="$SC/no-such-shellcheck" "$C" check 2>&1) || rc=$?
+    sc_eq "$rc" 0 "check passes a prose-only diff when shellcheck cannot run (tail: $(printf '%s' "$out" | tail -1))"
+    sc_grep_str "$out" "check: shellcheck NOT run \(Docker down, shellcheck not installed\)" "check says outright that shellcheck did not run"
+    sc_grep_str "$out" "check: OK" "a prose-only diff still ends check: OK"
+    printf '\n# self-check: a shell change\n' >>"$SC/candidate/scripts/lib.sh"
+    rc=0; out=$(cd "$SC/repo" && MM_SOURCES="$SC/sources3.yaml" MM_NO_DOCKER=1 MM_SHELLCHECK="$SC/no-such-shellcheck" "$C" check 2>&1) || rc=$?
+    sc_eq "$rc" 1 "check fails a scripts/ change when shellcheck cannot run"
+    sc_grep_str "$out" "check: FAILED — shell changes without shellcheck" "check names the reason for the degraded failure"
+    mkdir -p "$SC/bin"; printf '#!/bin/sh\nexit 0\n' >"$SC/bin/shellcheck"; chmod +x "$SC/bin/shellcheck"
+    rc=0; out=$(cd "$SC/repo" && MM_SOURCES="$SC/sources3.yaml" MM_NO_DOCKER=1 MM_SHELLCHECK="$SC/bin/shellcheck" "$C" check 2>&1) || rc=$?
+    sc_eq "$rc" 0 "check uses the on-PATH shellcheck when Docker is down (tail: $(printf '%s' "$out" | tail -1))"
+    sc_grep_str "$out" "ran the on-PATH shellcheck" "check says the on-PATH shellcheck is what ran"
+    git -C "$SC/candidate" checkout -q -- .
+
+    # ... and the knobs exist ONLY for this harness: with MM_SELF_CHECK unset
+    # (a stray MM_SHELLCHECK=/bin/true in someone's shell profile), check must
+    # behave as if they were absent. Asserted where Docker is up, because that
+    # is where "the container path ran" is the observable difference.
+    if docker info >/dev/null 2>&1; then
+      rc=0; out=$( (unset MM_SELF_CHECK
+        cd "$SC/repo" && MM_SOURCES="$SC/sources3.yaml" MM_NO_DOCKER=1 MM_SHELLCHECK=/bin/true "$C" check 2>&1) ) || rc=$?
+      sc_eq "$rc" 0 "check ignores the test knobs when MM_SELF_CHECK is unset (tail: $(printf '%s' "$out" | tail -1))"
+      knob_leaked=no
+      case "$out" in *"on-PATH shellcheck"* | *"shellcheck NOT run"*) knob_leaked=yes ;; esac
+      sc_eq "$knob_leaked" no "MM_NO_DOCKER/MM_SHELLCHECK do not reach the live gate: no degraded wording with MM_SELF_CHECK unset"
+    else
+      printf 'self-check: test-knob gating assertion skipped (Docker not running)\n'
+    fi
+  fi
+
+  unset MM_SELF_CHECK   # the test-only knobs stop being readable here
 
   : # Keep this bare `:` as the LAST statement of run_self_check. Some
     # assertions above are "should die" checks whose expected failure exits

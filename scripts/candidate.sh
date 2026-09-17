@@ -15,9 +15,11 @@ Usage: candidate.sh init | branch <slug> | check | pr <proposal-file> (--dry-run
   init              clone candidate.remote into candidate/ (or fetch when present)
   branch <slug>     refresh to origin/<default_branch> and create <branch_prefix><slug>
                     (slug: [a-z0-9-]+; refuses a dirty tree)
-  check             run the candidate's scripts/validate.sh and --harness, plus the pinned
-                    shellcheck container when Docker is available
-  pr <note>         re-run check; leakage gate (no store ids, workspace or repo names,
+  check             run the candidate's scripts/validate.sh and --harness, plus the shell
+                    gate: the pinned shellcheck container, or the on-PATH shellcheck when
+                    Docker is down, or — with neither — a loud notice, and a FAILED check
+                    when the change touches scripts/
+  pr <note>         re-run check (its summary lines are shown); leakage gate (no store ids, workspace or repo names,
                     source paths or MR URLs in the diff, the PR body, the note — title
                     and frontmatter included — or the commit subject); commit; push; open
                     the PR/MR (gh|glab); mark the note implemented.
@@ -36,6 +38,18 @@ cand="${MM_CANDIDATE_DIR:-$(mm_root)/candidate}"
 remote=$(mm_candidate remote); base=$(mm_candidate default_branch); prefix=$(mm_candidate branch_prefix)
 
 git_c() { git -C "$cand" "$@"; }
+# test_knob <name> — the value of a TEST-ONLY environment knob, and ONLY
+# while validate.sh --self-check is driving us: its harness exports
+# MM_SELF_CHECK=1. Anywhere else the variable is reported as unset, so a
+# stray MM_SHELLCHECK=/bin/true or MM_PR_SKIP_CHECK=1 left in a shell
+# profile cannot weaken a real check or a real `pr --yes`. This function is
+# the only place MM_NO_DOCKER, MM_SHELLCHECK and MM_PR_SKIP_CHECK are read:
+# audit the knobs here and nowhere else.
+test_knob() {
+  [ "${MM_SELF_CHECK:-}" = 1 ] || return 0
+  local name="$1"
+  printf '%s\n' "${!name:-}"
+}
 require_clean() { [ -z "$(git_c status --porcelain)" ] || mm_die "candidate/ has uncommitted changes — commit them via 'pr' or discard them first"; }
 # require_template — the clone at $cand is a morpheus-os template checkout.
 require_template() {
@@ -70,14 +84,52 @@ cmd_branch() {
     printf 'candidate: on %s (from origin/%s)\n' "$branch" "$base"
   fi
 }
+# touches_scripts — the candidate's pending change touches scripts/. The
+# corpus is what `pr` would publish: the branch diff against
+# origin/<default_branch>, plus staged/unstaged edits and untracked files.
+# Fails CLOSED: when origin/<default_branch> is missing we cannot tell what
+# the branch changes, so the answer is "yes, assume shell changes".
+touches_scripts() {
+  local files
+  git_c rev-parse --verify --quiet "origin/$base" >/dev/null 2>&1 || return 0
+  files=$( { git_c diff --name-only "origin/$base...HEAD"
+             git_c diff --name-only HEAD
+             git_c ls-files --others --exclude-standard; } 2>/dev/null || true)
+  printf '%s\n' "$files" | grep -q '^scripts/'
+}
+# cmd_check — the candidate's own validate + --harness, then the shell gate.
+# The shell gate has three states, and never passes silently:
+#   pinned container   Docker is up: the strict gate, as in CI.
+#   on-PATH shellcheck Docker is down but shellcheck is installed: run it at
+#                      warning severity and say that is what ran.
+#   neither            say so, and FAIL when the change touches scripts/ —
+#                      a shell change must never ship ungated.
+# MM_NO_DOCKER and MM_SHELLCHECK are TEST-ONLY knobs, read through
+# test_knob: validate.sh --self-check has to reach the degraded paths on a
+# machine where Docker is up and shellcheck may or may not exist.
+# MM_NO_DOCKER=1 pretends the container cannot run; MM_SHELLCHECK names the
+# linter command to look for on PATH (point it at a nonexistent name to
+# simulate "not installed"). Outside the self-check both are ignored, so
+# neither can soften this gate.
 cmd_check() {
   require_template
-  local rc=0
+  local rc=0 ungated=no no_docker shellcheck_cmd
+  no_docker=$(test_knob MM_NO_DOCKER)
+  shellcheck_cmd=$(test_knob MM_SHELLCHECK); [ -n "$shellcheck_cmd" ] || shellcheck_cmd=shellcheck
   (cd "$cand" && scripts/validate.sh) || rc=1
   (cd "$cand" && scripts/validate.sh --harness) || rc=1
-  if docker info >/dev/null 2>&1; then
+  if [ "$no_docker" != 1 ] && docker info >/dev/null 2>&1; then
     (cd "$cand" && docker run --rm -e LANG=C.UTF-8 -v "$PWD":/w -w /w koalaman/shellcheck:stable scripts/*.sh) || rc=1
-  else printf 'check: shellcheck container skipped (Docker not running)\n'; fi
+  elif command -v "$shellcheck_cmd" >/dev/null 2>&1; then
+    printf 'check: shellcheck container unavailable (Docker down) — ran the on-PATH shellcheck at warning severity instead\n'
+    (cd "$cand" && "$shellcheck_cmd" --severity=warning scripts/*.sh) || rc=1
+  else
+    printf 'check: shellcheck NOT run (Docker down, shellcheck not installed)\n'
+    if touches_scripts; then ungated=yes; fi
+  fi
+  # One summary line, always: the specific reason when the shell gate is what
+  # failed, the generic one otherwise.
+  if [ "$ungated" = yes ]; then printf 'check: FAILED — shell changes without shellcheck\n' >&2; return 1; fi
   if [ "$rc" -eq 0 ]; then printf 'check: OK\n'; else printf 'check: FAILED\n' >&2; return 1; fi
 }
 cmd_pr() {
@@ -86,7 +138,7 @@ cmd_pr() {
   # returned to the dispatcher and its locals would be gone), so these must
   # stay in scope at the script level for the trap to clean them up under
   # `set -u`.
-  local note="" dry=no yes=no title body branch host hits url ahead d ws sc
+  local note="" dry=no yes=no title body branch host hits url ahead d ws sc chk_out chk_rc
   prbody=""; ids_file=""; leakfile=""
   while [ $# -gt 0 ]; do case "$1" in --dry-run) dry=yes ;; --yes) yes=yes ;; -*) mm_usage_error "pr: unknown option $1" ;; *) note="$1" ;; esac; shift; done
   [ -n "$note" ] && [ -f "$note" ] || mm_usage_error "pr needs an existing <proposal-file>"
@@ -102,11 +154,19 @@ cmd_pr() {
   git_c rev-parse --verify --quiet "origin/$base" >/dev/null || mm_die "origin/$base not found — check candidate.default_branch or run candidate.sh init"
   # The template's --harness is the slow part of check (~1-2 min). The self-check
   # runs a dozen dry-run scenarios, so it may skip the re-run with
-  # MM_PR_SKIP_CHECK=1 — honoured ONLY in --dry-run; the live path always checks.
-  if [ "$dry" = yes ] && [ "${MM_PR_SKIP_CHECK:-}" = 1 ]; then
+  # MM_PR_SKIP_CHECK=1 — read only under MM_SELF_CHECK (see test_knob) and
+  # honoured ONLY in --dry-run; the live path always checks.
+  if [ "$dry" = yes ] && [ "$(test_knob MM_PR_SKIP_CHECK)" = 1 ]; then
     printf 'pr: check skipped (MM_PR_SKIP_CHECK=1, dry-run only)\n'
   else
-    cmd_check >/dev/null || mm_die "check failed — fix the candidate before opening a PR"
+    # The re-run's own summary lines (validate:/harness:/check:) belong in the
+    # operator's view — the dry run is what they eyeball before the go-ahead.
+    # The candidate's warnings are prefixed so they read as the candidate's,
+    # not as something this proposal caused.
+    printf "check: running the candidate's own validate/harness…\n"
+    chk_rc=0; chk_out=$(cmd_check 2>&1) || chk_rc=$?
+    printf '%s\n' "$chk_out" | sed 's/^warning:/candidate: warning:/'
+    [ "$chk_rc" -eq 0 ] || mm_die "check failed — fix the candidate before opening a PR"
   fi
   title=$(mm_frontmatter_field "$note" title)
   body=$(awk '/^## Proposal/ { p = 1; next } /^## / { p = 0 } p' "$note")
